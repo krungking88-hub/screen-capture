@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Screen Tools — Record · Screenshot · Snip</title>
+<style>
+  :root{--bg:#0f1724;--card:#0b1220;--accent:#06b6d4;--muted:#94a3b8}
+  body{
+    margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;
+    background:linear-gradient(180deg,#020617,#07102a);color:#e6eef6;
+    min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:28px;
+  }
+  .app{width:100%;max-width:1100px}
+  header{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+  header h1{font-size:18px;margin:0}
+  .grid{display:grid;grid-template-columns:1fr 420px;gap:18px}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,0.03)}
+  .controls{display:flex;gap:8px;flex-wrap:wrap}
+  button{background:var(--accent);color:#042a2d;border:none;padding:8px 10px;border-radius:8px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+  .small{font-size:13px;color:var(--muted);margin-top:8px}
+  video{width:100%;border-radius:8px;background:#000;max-height:320px}
+  img.preview{max-width:100%;border-radius:8px;display:block}
+  canvas#snapCanvas{width:100%;border-radius:8px;background:#000;display:block}
+  .snip-tools{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .note{font-size:13px;color:#9fb7c0;margin-top:10px}
+  .row{display:flex;gap:8px;align-items:center}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .footer{margin-top:12px;font-size:13px;color:var(--muted)}
+  @media (max-width:960px){ .grid{grid-template-columns:1fr} .card{padding:12px} }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Screen Tools — Record · Screenshot · Snip</h1>
+      <div class="small">now share or record your experience</div>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT: recorder + preview + snapshot -->
+      <div class="card">
+        <h3>Screen Recorder</h3>
+        <div class="controls">
+          <button id="startRec">Start Recording</button>
+          <button id="stopRec" class="ghost" disabled>Stop</button>
+          <button id="downloadRec" class="ghost" disabled>Download Recording</button>
+        </div>
+        <div class="small">When you click <b>Start Recording</b> the browser asks which screen/window/tab to share. Choose audio if you want system/tab audio (browser dependent).</div>
+
+        <div style="height:12px"></div>
+
+        <video id="preview" controls playsinline></video>
+
+        <hr style="opacity:0.06;margin:12px 0">
+
+        <h3>Screenshot & Snip</h3>
+        <div class="controls">
+          <button id="takeScreenshot">Take Screenshot</button>
+          <button id="openCamera" class="ghost">Open Camera (optional)</button>
+          <button id="captureCamera" class="ghost" disabled>Capture Camera Frame</button>
+          <button id="clearSnap" class="ghost" disabled>Clear</button>
+        </div>
+        <div class="small">After taking a screenshot, draw a rectangle on the image to crop (snip) and then download it.</div>
+
+        <div style="height:12px"></div>
+        <!-- where screenshot will appear -->
+        <canvas id="snapCanvas"></canvas>
+
+        <div class="snip-tools">
+          <div class="row">
+            <button id="downloadSnip" class="ghost" disabled>Download Snip</button>
+            <button id="resetSelection" class="ghost" disabled>Reset Selection</button>
+          </div>
+          <div style="flex:1"></div>
+          <div class="small" id="selInfo"></div>
+        </div>
+
+        <div class="note">Privacy: nothing leaves your browser. No server involved.</div>
+      </div>
+
+      <!-- RIGHT: extras -->
+      <div class="card">
+        <h3>Extras & Settings</h3>
+        <div style="margin-top:8px">
+          <label class="small">Recording format: <b>webm (vp9)</b></label>
+          <div class="small">If browser doesn't support encoder you'll get a default container.</div>
+        </div>
+
+        <div style="height:12px"></div>
+
+        <div>
+          <label class="small">Saved clips</label>
+          <div id="clipsList" style="display:flex;flex-direction:column;gap:8px;margin-top:8px"></div>
+        </div>
+
+        <div style="height:16px"></div>
+        <div>
+          <label class="small">Shortcuts</label>
+          <ul class="small" style="margin:6px 0 0 18px">
+            <li>Start Rec: click button (or call via code)</li>
+            <li>Stop Rec: click Stop</li>
+            <li>Screenshot: select screen when prompted & click <b>Take Screenshot</b></li>
+          </ul>
+        </div>
+
+        <div class="footer">Tip: prefer Chrome/Edge for best capture & audio support. Firefox may treat audio differently per platform.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/*
+  Screen Tools — single-file demo
+  - Screen recording with MediaRecorder (getDisplayMedia)
+  - Screenshot capture from the chosen screen stream
+  - Snip/crop UI on canvas (draw rectangle, download)
+  - Local-only, no server.
+*/
+
+// ---------- Recorder ----------
+let mediaStream = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+const startRecBtn = document.getElementById('startRec');
+const stopRecBtn = document.getElementById('stopRec');
+const downloadRecBtn = document.getElementById('downloadRec');
+const preview = document.getElementById('preview');
+const clipsList = document.getElementById('clipsList');
+
+startRecBtn.addEventListener('click', async () => {
+  try {
+    // ask user which screen/window/tab to share
+    mediaStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    // show live preview
+    preview.srcObject = mediaStream;
+    preview.muted = true;
+    await preview.play().catch(()=>{});
+    // setup recorder
+    recordedChunks = [];
+    const options = { mimeType: 'video/webm; codecs=vp9' };
+    try { mediaRecorder = new MediaRecorder(mediaStream, options); }
+    catch(e){ mediaRecorder = new MediaRecorder(mediaStream); } // fallback
+    mediaRecorder.ondataavailable = e => { if(e.data && e.data.size) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      // enable download
+      downloadRecBtn.disabled = false;
+      downloadRecBtn.onclick = () => downloadBlob(blob, `screen-record-${timestamp()}.webm`);
+      // add to clips list for easy access
+      addClipToList(url, blob);
+    };
+    mediaRecorder.start();
+    startRecBtn.disabled = true;
+    stopRecBtn.disabled = false;
+    downloadRecBtn.disabled = true;
+    console.log('[rec] started');
+  } catch (err) {
+    alert('Permission denied or no display media available: ' + err.message);
+  }
+});
+
+stopRecBtn.addEventListener('click', () => {
+  if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+    // stop tracks we started
+    stopStream(mediaStream);
+    preview.srcObject = null;
+    startRecBtn.disabled = false;
+    stopRecBtn.disabled = true;
+    console.log('[rec] stopped');
+  }
+});
+
+function addClipToList(url, blob){
+  const el = document.createElement('div');
+  el.style.display='flex';el.style.alignItems='center';el.style.gap='8px';
+  const v = document.createElement('video'); v.src = url; v.controls = true; v.style.width='140px'; v.style.borderRadius='8px';
+  const dl = document.createElement('button'); dl.className='ghost'; dl.textContent='Download'; dl.onclick = ()=> downloadBlob(blob, `screen-record-${timestamp()}.webm`);
+  el.appendChild(v); el.appendChild(dl);
+  clipsList.prepend(el);
+}
+
+function downloadBlob(blob, filename){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// ---------- Screenshot & Snip ----------
+const takeScreenshotBtn = document.getElementById('takeScreenshot');
+const snapCanvas = document.getElementById('snapCanvas');
+const ctx = snapCanvas.getContext('2d');
+const downloadSnipBtn = document.getElementById('downloadSnip');
+const resetSelectionBtn = document.getElementById('resetSelection');
+const selInfo = document.getElementById('selInfo');
+const clearSnapBtn = document.getElementById('clearSnap');
+
+let screenshotStream = null; // stream used for screenshot capture (getDisplayMedia)
+let lastImageDataUrl = null;
+
+// selection variables for snip
+let selecting=false, selStartX=0, selStartY=0, selW=0, selH=0;
+
+takeScreenshotBtn.addEventListener('click', async ()=>{
+  try {
+    // request display media for a single frame (user chooses screen/window/tab)
+    screenshotStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    // draw first video frame to canvas
+    const videoTrack = screenshotStream.getVideoTracks()[0];
+    const image = new Image();
+    // create a temporary video element
+    const tempVid = document.createElement('video');
+    tempVid.srcObject = new MediaStream([videoTrack]);
+    tempVid.play();
+    tempVid.onloadedmetadata = () => {
+      // size canvas to video resolution
+      snapCanvas.width = tempVid.videoWidth;
+      snapCanvas.height = tempVid.videoHeight;
+      // draw a frame after a short delay to ensure frame available
+      setTimeout(()=>{
+        ctx.drawImage(tempVid, 0, 0, snapCanvas.width, snapCanvas.height);
+        lastImageDataUrl = snapCanvas.toDataURL('image/png');
+        // stop track immediately (we only needed one frame)
+        stopStream(screenshotStream);
+        // enable snip controls
+        downloadSnipBtn.disabled = false;
+        resetSelectionBtn.disabled = false;
+        clearSnapBtn.disabled = false;
+        selInfo.textContent = 'Drag on image to select area to snip';
+      }, 120);
+    };
+  } catch(err){
+    alert('Screenshot failed / permission denied: ' + err.message);
+  }
+});
+
+// clear canvas
+clearSnapBtn.addEventListener('click', ()=>{
+  ctx.clearRect(0,0,snapCanvas.width,snapCanvas.height);
+  lastImageDataUrl = null;
+  downloadSnipBtn.disabled = true;
+  resetSelectionBtn.disabled = true;
+  clearSnapBtn.disabled = true;
+  selInfo.textContent = '';
+});
+
+// mouse handlers for selection rectangle
+snapCanvas.addEventListener('mousedown', e=>{
+  if(!lastImageDataUrl) return;
+  const r = snapCanvas.getBoundingClientRect();
+  selecting = true;
+  selStartX = Math.round((e.clientX - r.left) * (snapCanvas.width / r.width));
+  selStartY = Math.round((e.clientY - r.top) * (snapCanvas.height / r.height));
+  selW = selH = 0;
+  redrawCanvasWithSelection();
+});
+
+snapCanvas.addEventListener('mousemove', e=>{
+  if(!selecting) return;
+  const r = snapCanvas.getBoundingClientRect();
+  const curX = Math.round((e.clientX - r.left) * (snapCanvas.width / r.width));
+  const curY = Math.round((e.clientY - r.top) * (snapCanvas.height / r.height));
+  selW = curX - selStartX;
+  selH = curY - selStartY;
+  redrawCanvasWithSelection();
+});
+
+snapCanvas.addEventListener('mouseup', e=>{
+  if(!selecting) return;
+  selecting = false;
+  // ensure positive width/height & update info
+  let sx = selStartX, sy = selStartY, w = selW, h = selH;
+  if(w < 0){ sx += w; w = Math.abs(w); }
+  if(h < 0){ sy += h; h = Math.abs(h); }
+  selStartX = sx; selStartY = sy; selW = w; selH = h;
+  selInfo.textContent = `Selection: ${w}×${h} at (${sx},${sy})`;
+  downloadSnipBtn.disabled = !(w>4 && h>4);
+});
+
+// reset selection
+resetSelectionBtn.addEventListener('click', ()=>{
+  selStartX = selStartY = selW = selH = 0;
+  redrawCanvasWithSelection();
+  downloadSnipBtn.disabled = true;
+  selInfo.textContent = 'Selection reset';
+});
+
+// download snip (crop)
+downloadSnipBtn.addEventListener('click', ()=>{
+  if(!lastImageDataUrl) return;
+  let sx = selStartX, sy = selStartY, w = selW, h = selH;
+  if(w === 0 || h === 0) {
+    alert('Please make a selection area to snip.');
+    return;
+  }
+  // ensure positive
+  if(w < 0){ sx += w; w = Math.abs(w); }
+  if(h < 0){ sy += h; h = Math.abs(h); }
+  // create temporary canvas for crop
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const cctx = c.getContext('2d');
+  const img = new Image();
+  img.onload = () => {
+    cctx.drawImage(img, sx, sy, w, h, 0, 0, w, h);
+    c.toBlob(blob => {
+      downloadBlob(blob, `snip-${timestamp()}.png`);
+    }, 'image/png');
+  };
+  img.src = lastImageDataUrl;
+});
+
+// helper to redraw image + selection rectangle overlay
+function redrawCanvasWithSelection(){
+  // redraw base image
+  if(lastImageDataUrl){
+    const img = new Image();
+    img.onload = () => {
+      // clear and draw
+      ctx.clearRect(0,0,snapCanvas.width,snapCanvas.height);
+      ctx.drawImage(img, 0, 0, snapCanvas.width, snapCanvas.height);
+      // draw selection
+      if(selW !== 0 || selH !== 0){
+        let sx = selStartX, sy = selStartY, w = selW, h = selH;
+        if(w < 0){ sx += w; w = Math.abs(w); }
+        if(h < 0){ sy += h; h = Math.abs(h); }
+        ctx.save();
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = Math.max(2, Math.round(Math.min(snapCanvas.width, snapCanvas.height) / 300));
+        ctx.setLineDash([6,4]);
+        ctx.strokeRect(sx + 0.5, sy + 0.5, w, h);
+        ctx.fillStyle = 'rgba(6,182,212,0.12)';
+        ctx.fillRect(sx, sy, w, h);
+        ctx.restore();
+      }
+    };
+    img.src = lastImageDataUrl;
+  } else {
+    ctx.clearRect(0,0,snapCanvas.width,snapCanvas.height);
+  }
+}
+
+// ---------- Camera optional (preview & capture frame into canvas) ----------
+const openCameraBtn = document.getElementById('openCamera');
+const captureCameraBtn = document.getElementById('captureCamera');
+let cameraStream = null;
+openCameraBtn.addEventListener('click', async ()=>{
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    // show a small preview inside the canvas area by drawing frames
+    const video = document.createElement('video');
+    video.autoplay = true; video.playsInline = true; video.muted = true;
+    video.srcObject = cameraStream;
+    await video.play();
+    // set canvas to camera dimensions then draw current frame to canvas
+    snapCanvas.width = video.videoWidth || 640;
+    snapCanvas.height = video.videoHeight || 480;
+    // draw the live frame
+    const draw = ()=> {
+      if (cameraStream && video.readyState >= 2) {
+        ctx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+      }
+      if(cameraStream) requestAnimationFrame(draw);
+    };
+    draw();
+    captureCameraBtn.disabled = false;
+    clearSnapBtn.disabled = false;
+  } catch(err){
+    alert('Camera access denied or not available: ' + err.message);
+  }
+});
+
+captureCameraBtn.addEventListener('click', ()=>{
+  // freeze current canvas image (already coming from camera)
+  // save to lastImageDataUrl
+  lastImageDataUrl = snapCanvas.toDataURL('image/png');
+  // stop camera stream
+  if(cameraStream) stopStream(cameraStream);
+  cameraStream = null;
+  captureCameraBtn.disabled = true;
+  selInfo.textContent = 'Captured from camera — draw to select';
+  downloadSnipBtn.disabled = false;
+});
+
+// ---------- helpers ----------
+function stopStream(s){
+  if(!s) return;
+  try{ s.getTracks().forEach(t=>t.stop()); } catch(e){}
+}
+
+function timestamp(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
+</script>
+</body>
+</html>
+
